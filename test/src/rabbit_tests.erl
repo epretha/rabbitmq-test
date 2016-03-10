@@ -3463,3 +3463,169 @@ disconnect_detected_during_alarm([ACfg]) ->
     [] = ListConnections(),
 
     passed.
+
+test_for_up_queues_with_both_durable_and_transient_queues_with() ->
+    [cluster_ab].
+test_for_up_queues_with_both_durable_and_transient_queues(NodesConfig) ->
+    QueueState = up,
+    check_with_both_transient_and_durable_queues(QueueState, NodesConfig).
+
+test_for_down_queues_with_both_durable_and_transient_queues_with() ->
+    [cluster_ab].
+test_for_down_queues_with_both_durable_and_transient_queues(NodesConfig) ->
+    QueueState = down,
+    check_with_both_transient_and_durable_queues(QueueState, NodesConfig).
+
+test_for_up_queues_with_only_transient_queues_with() ->
+    [cluster_ab].
+test_for_up_queues_with_only_transient_queues(NodesConfig) ->
+    QueueState = up,
+    check_with_only_transient_queues(QueueState, NodesConfig).
+
+test_for_down_queues_with_only_transient_queues_with() ->
+    [cluster_ab].
+test_for_down_queues_with_only_transient_queues(NodesConfig) ->
+    QueueState = down,
+    check_with_only_transient_queues(QueueState, NodesConfig).
+
+test_for_up_queues_without_any_queues_with() ->
+    [cluster_ab].
+test_for_up_queues_without_any_queues([NodeAConfig, NodeBConfig]) ->
+    NodeBName = pget(node, NodeBConfig),
+    rabbit_test_configs:stop_node(NodeAConfig),
+    VirtualHost = <<"/">>,
+    DownQueues = rpc:call(NodeBName, rabbit_amqqueue, info_up_queues,
+                          [VirtualHost, [name, state]]),
+    DownQueues =:= [].
+
+test_for_down_queues_without_any_queues_with() ->
+    [cluster_ab].
+test_for_down_queues_without_any_queues([NodeAConfig, NodeBConfig]) ->
+    NodeBName = pget(node, NodeBConfig),
+    rabbit_test_configs:stop_node(NodeAConfig),
+    VirtualHost = <<"/">>,
+    DownQueues = rpc:call(NodeBName, rabbit_amqqueue, info_down_queues,
+                          [VirtualHost, [name, state]]),
+    DownQueues =:= [].
+
+
+%%% Internal Functions %%%
+check_with_both_transient_and_durable_queues(QueueState, [NodeAConfig,
+                                                         NodeBConfig]) ->
+    NodeA = pget(node, NodeAConfig),
+    NodeB = pget(node, NodeBConfig),
+    NodeAName = pget(nodename, NodeAConfig),
+    NodeBName = pget(nodename, NodeBConfig),
+    DurableQueuesOnNodeA = generate_queue_names(NodeAName, 3, durable),
+    TransientQueuesOnNodeA = generate_queue_names(NodeAName, 2, transient),
+    DurableQueuesOnNodeB = generate_queue_names(NodeBName, 2, durable),
+    TransientQueuesOnNodeB = generate_queue_names(NodeBName, 1, transient),
+    QueueCreationData = [get_queue_creation_data_for_node(NodeA, NodeAConfig,
+                                                         TransientQueuesOnNodeA,
+                                                          DurableQueuesOnNodeA),
+                         get_queue_creation_data_for_node(NodeB, NodeBConfig,
+                                                         TransientQueuesOnNodeB,
+                                                         DurableQueuesOnNodeB)],
+    ok = create_queues_on_clustered_nodes(QueueCreationData),
+    case QueueState of
+        up ->
+            true = check_for_queues(NodeB, info_up_queues,
+                                    DurableQueuesOnNodeA ++
+                                        TransientQueuesOnNodeA ++
+                                        DurableQueuesOnNodeB ++
+                                        TransientQueuesOnNodeB, running),
+            rabbit_test_configs:stop_node(NodeAConfig),
+            true =:= check_for_queues(NodeB, info_up_queues,
+                                      DurableQueuesOnNodeB ++
+                                          TransientQueuesOnNodeB, running);
+        down ->
+            rabbit_test_configs:stop_node(NodeAConfig),
+            true =:= check_for_queues(NodeB, info_down_queues,
+                                      DurableQueuesOnNodeA, down)
+    end.
+
+check_with_only_transient_queues(QueueState, [NodeAConfig, NodeBConfig]) ->
+    NodeA = pget(node, NodeAConfig),
+    NodeB = pget(node, NodeBConfig),
+    NodeAName = pget(nodename, NodeAConfig),
+    NodeBName = pget(nodename, NodeBConfig),
+    TransientQueuesOnNodeA = generate_queue_names(NodeAName, 2, transient),
+    TransientQueuesOnNodeB = generate_queue_names(NodeBName, 1, transient),
+    QueueCreationData = [get_queue_creation_data_for_node(NodeA,
+                                                          NodeAConfig,
+                                                         TransientQueuesOnNodeA,
+                                                          []),
+                         get_queue_creation_data_for_node(NodeB,
+                                                          NodeBConfig,
+                                                         TransientQueuesOnNodeB,
+                                                          [])],
+    ok = create_queues_on_clustered_nodes(QueueCreationData),
+    case QueueState of
+        up ->
+            true = check_for_queues(NodeB, info_up_queues,
+                                    TransientQueuesOnNodeA ++
+                                        TransientQueuesOnNodeB, running),
+            rabbit_test_configs:stop_node(NodeAConfig),
+            true =:= check_for_queues(NodeB, info_up_queues,
+                                      TransientQueuesOnNodeB,
+                                      running);
+        down ->
+            rabbit_test_configs:stop_node(NodeAConfig),
+            VirtualHost = <<"/">>,
+            DownQueues = rpc:call(NodeB, rabbit_amqqueue, info_down_queues,
+                                  [VirtualHost, [name, state]]),
+            DownQueues =:= []
+    end.
+
+generate_queue_names(NodeName, TotalNumberOfQueues, QueueType) ->
+    QueuePrefix = case QueueType of
+        durable ->
+            "dqueue_";
+        transient ->
+            "tqueue_"
+    end,
+    [list_to_binary(QueuePrefix ++ atom_to_list(NodeName) ++ "_" ++
+                        integer_to_list(QueueNumber) ) ||
+        QueueNumber <- lists:seq(1, TotalNumberOfQueues)].
+
+get_queue_creation_data_for_node(NodeName, NodeConfig, TransientQueueNames,
+                                DurableQueueNames) ->
+    {NodeName, [{config, NodeConfig},
+                {transient_queues, TransientQueueNames},
+                {durable_queues, DurableQueueNames}]}.
+
+create_queues_on_clustered_nodes([]) ->
+    ok;
+create_queues_on_clustered_nodes([QueueCreationDataOfFirstNode |
+                                  QueueCreationDataOfRemainingNodes]) ->
+    {NodeName, QueueCreationData} = QueueCreationDataOfFirstNode,
+    {config, NodeConfig} = lists:keyfind(config, 1, QueueCreationData),
+    {transient_queues, TransientQueues} = lists:keyfind(transient_queues, 1,
+                                                        QueueCreationData),
+    {durable_queues, DurableQueues} = lists:keyfind(durable_queues, 1,
+                                                    QueueCreationData),
+    NodeChannel = pget(channel, NodeConfig),
+    amqp_channel:call(NodeChannel, #'confirm.select'{}),
+    create_queues(NodeName, NodeChannel, TransientQueues, false),
+    create_queues(NodeName, NodeChannel, DurableQueues, true),
+    create_queues_on_clustered_nodes(QueueCreationDataOfRemainingNodes).
+
+create_queues(NodeName, Channel, QueueNames, DurabilityFlag) ->
+    [amqp_channel:call(Channel, #'queue.declare'{queue = QueueName,
+                                                 durable = DurabilityFlag})
+     || QueueName <- QueueNames],
+    [ok = crashing_queues:await_state(NodeName, QueueName, running)
+     || QueueName <- QueueNames].
+
+check_for_queues(NodeName, TargetFunction, ExpectedQueueNames,
+                 ExpectedQueueState) ->
+    VirtualHost = <<"/">>,
+    ActualQueues = rpc:call(NodeName, rabbit_amqqueue, TargetFunction,
+                        [VirtualHost, [name, state]]),
+    lists:all(fun(ActualQueue)->
+                      [{name, {resource, <<"/">>, queue,
+                               ActualQueueName}},
+                       {state, ActualQueueState}] = ActualQueue,
+                      true = lists:member(ActualQueueName, ExpectedQueueNames),
+                      ExpectedQueueState =:= ActualQueueState
+              end, ActualQueues).
