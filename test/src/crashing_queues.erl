@@ -141,12 +141,17 @@ await_state(Node, QName, State, Time) ->
     end.
 
 state(Node, QName) ->
-    V = <<"/">>,
-    Res = rabbit_misc:r(V, queue, QName),
-    [[{name,  Res},
-      {state, State}]] =
-        rpc:call(Node, rabbit_amqqueue, info_all, [V, [name, state]]),
-    State.
+    VirtualHost = <<"/">>,
+    Queue = rabbit_misc:r(VirtualHost, queue, QName),
+    AllQueues = rpc:call(Node, rabbit_amqqueue, info_all, [VirtualHost,
+                                                        [name, state]]),
+    MatchingQueue = lists:filter(
+                    fun([{name, AvailableQueue}, _])->
+                            AvailableQueue =:= Queue
+                    end, AllQueues),
+    [[{name, _QueueName},
+      {state, QueueState}]] = MatchingQueue,
+    QueueState.
 
 kill_queue_hard(Node, QName) ->
     case kill_queue(Node, QName) of

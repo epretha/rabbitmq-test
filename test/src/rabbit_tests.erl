@@ -3463,3 +3463,81 @@ disconnect_detected_during_alarm([ACfg]) ->
     [] = ListConnections(),
 
     passed.
+
+test_for_down_queues_with_both_durable_and_transient_queues_with() ->
+    [cluster_ab].
+test_for_down_queues_with_both_durable_and_transient_queues([NodeAConfig,
+                                                             NodeBConfig]) ->
+    NodeAName = pget(node, NodeAConfig),
+    NodeBName = pget(node, NodeBConfig),
+    NodeAChannel = pget(channel, NodeAConfig),
+    NodeBChannel = pget(channel, NodeBConfig),
+
+    DurableQueuesOnNodeA = [<<"dqueue_a_1">>, <<"dqueue_a_2">>,
+                            <<"dqueue_a_3">>],
+    TransientQueuesOnNodeA = [<<"tqueue_a_1">>, <<"tqueue_a_2">>],
+    DurableQueuesOnNodeB = [<<"dqueue_b_1">>, <<"dqueue_b_2">>],
+    TransientQueuesOnNodeB = [<<"tqueue_b_1">>],
+
+    amqp_channel:call(NodeAChannel, #'confirm.select'{}),
+    create_queues(NodeAName, NodeAChannel, DurableQueuesOnNodeA, true),
+    create_queues(NodeAName, NodeAChannel, TransientQueuesOnNodeA, false),
+
+    amqp_channel:call(NodeBChannel, #'confirm.select'{}),
+    create_queues(NodeBName, NodeBChannel, DurableQueuesOnNodeB, true),
+    create_queues(NodeBName, NodeBChannel, TransientQueuesOnNodeB, false),
+
+    rabbit_test_configs:stop_node(NodeAConfig),
+    VirtualHost = <<"/">>,
+    DownQueues = rpc:call(NodeBName, rabbit_amqqueue,
+                          get_info_about_down_queues,
+                          [VirtualHost, [name, state]]),
+    true =:= lists:all(fun(DownQueue)->
+                             [{name, {resource, <<"/">>, queue,
+                                      DownQueueName}},
+                              {state, DownQueueState}] = DownQueue,
+                             true = lists:member(DownQueueName,
+                                            DurableQueuesOnNodeA),
+                             down =:= DownQueueState
+                     end, DownQueues).
+
+test_for_down_queues_with_only_transient_queues_with() ->
+    [cluster_ab].
+test_for_down_queues_with_only_transient_queues([NodeAConfig, NodeBConfig]) ->
+    NodeAName = pget(node, NodeAConfig),
+    NodeBName = pget(node, NodeBConfig),
+    NodeAChannel = pget(channel, NodeAConfig),
+    NodeBChannel = pget(channel, NodeBConfig),
+
+    TransientQueuesOnNodeA = [<<"tqueue_a_1">>, <<"tqueue_a_2">>],
+    TransientQueuesOnNodeB = [<<"tqueue_b_1">>],
+
+    amqp_channel:call(NodeAChannel, #'confirm.select'{}),
+    create_queues(NodeAName, NodeAChannel, TransientQueuesOnNodeA, false),
+    amqp_channel:call(NodeBChannel, #'confirm.select'{}),
+    create_queues(NodeBName, NodeBChannel, TransientQueuesOnNodeB, false),
+
+    rabbit_test_configs:stop_node(NodeAConfig),
+    VirtualHost = <<"/">>,
+    DownQueues = rpc:call(NodeBName, rabbit_amqqueue,
+                          get_info_about_down_queues,
+                          [VirtualHost, [name, state]]),
+    DownQueues =:= [].
+
+test_for_down_queues_without_any_queues_with() ->
+    [cluster_ab].
+test_for_down_queues_without_any_queues([NodeAConfig, NodeBConfig]) ->
+    NodeBName = pget(node, NodeBConfig),
+    rabbit_test_configs:stop_node(NodeAConfig),
+    VirtualHost = <<"/">>,
+    DownQueues = rpc:call(NodeBName, rabbit_amqqueue,
+                          get_info_about_down_queues,
+                          [VirtualHost, [name, state]]),
+    DownQueues =:= [].
+
+create_queues(NodeName, Channel, QueueNames, DurabilityFlag) ->
+    [amqp_channel:call(Channel, #'queue.declare'{queue = QueueName,
+                                                 durable = DurabilityFlag})
+     || QueueName <- QueueNames],
+    [ok = crashing_queues:await_state(NodeName, QueueName, running)
+     || QueueName <- QueueNames].
